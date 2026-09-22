@@ -168,6 +168,9 @@ class PipelineExecutor:
                         out_path = node._execution_context.get(f'_output_{nid}_path')
                         if out_path and img_result.output_path is None:
                             img_result.output_path = out_path
+                        written = node._execution_context.get('_written_outputs')
+                        if isinstance(written, list):
+                            img_result.output_paths = list(written)
                     node_result.success = True
                 except Exception as e:
                     node_result.error = str(e)

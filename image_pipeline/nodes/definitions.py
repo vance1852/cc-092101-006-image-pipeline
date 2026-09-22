@@ -340,6 +340,21 @@ class ResizeNode(PipelineNode):
             kwargs['target_height'] = int(p['height'])
         return alg.resize(inputs[0], **kwargs)
 
+def resolve_output_path(input_filename: str, output_dir: str, params: Dict[str, Any]) -> str:
+    """Compute the target output path the same way OutputNode writes it."""
+    import os
+    stem, ext = os.path.splitext(input_filename)
+    suffix = params.get('suffix', '')
+    fmt = params.get('format')
+    if fmt:
+        fmt_to_ext = {'PNG': '.png', 'JPEG': '.jpg', 'BMP': '.bmp', 'TIFF': '.tif', 'WEBP': '.webp'}
+        out_ext = fmt_to_ext.get(str(fmt).upper(), ext)
+    else:
+        out_ext = ext if ext else '.png'
+    out_name = f'{stem}{suffix}{out_ext}'
+    return os.path.join(output_dir, out_name)
+
+
 class OutputNode(PipelineNode):
     node_type = NodeType.OUTPUT
     input_count = 1
@@ -359,19 +374,13 @@ class OutputNode(PipelineNode):
         input_filename = self._execution_context.get('input_filename')
         params = self.effective_params()
         if output_dir and input_filename:
-            import os
-            stem, ext = os.path.splitext(input_filename)
-            suffix = params.get('suffix', '')
-            fmt = params.get('format')
-            if fmt:
-                fmt_to_ext = {'PNG': '.png', 'JPEG': '.jpg', 'BMP': '.bmp', 'TIFF': '.tif', 'WEBP': '.webp'}
-                out_ext = fmt_to_ext.get(fmt.upper(), ext)
-            else:
-                out_ext = ext if ext else '.png'
-            out_name = f'{stem}{suffix}{out_ext}'
-            out_path = os.path.join(output_dir, out_name)
+            out_path = resolve_output_path(input_filename, output_dir, params)
+            writer = self._execution_context.get('image_writer') or write_image
             try:
-                write_image(img, out_path, fmt=fmt, quality=int(params.get('quality', 90)))
+                writer(img, out_path, fmt=params.get('format'), quality=int(params.get('quality', 90)))
+                written = self._execution_context.get('_written_outputs')
+                if isinstance(written, list) and out_path not in written:
+                    written.append(out_path)
                 self._execution_context[f'_output_{self.node_id}_path'] = out_path
             except Exception as e:
                 raise ExecutionError(f"[{self.node_id}] Failed to write output to '{out_path}': {e}") from e

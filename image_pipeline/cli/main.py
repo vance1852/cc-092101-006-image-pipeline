@@ -36,6 +36,14 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f'Input dir: {input_dir}')
         print(f'Output dir: {output_dir}')
         print(f"Execution order: {' -> '.join(executor.execution_order)}")
+        if args.force_recompute:
+            print('Mode: FORCE RECOMPUTE (ledger records ignored, everything redone)')
+        elif args.retry_failed:
+            print('Mode: RETRY FAILED (previous failures retried)')
+        elif args.no_ledger:
+            print('Ledger: disabled')
+        else:
+            print('Ledger: enabled (completed items with matching inputs/config/outputs are reused)')
         print()
     if not os.path.isdir(input_dir):
         print(f'ERROR: Input directory not found: {input_dir}', file=sys.stderr)
@@ -51,17 +59,21 @@ def cmd_run(args: argparse.Namespace) -> int:
 
         def _progress(done: int, total: int, result):
             pct = 100.0 * done / total
-            status = 'OK' if result.success else 'FAIL'
+            tag = {'completed': 'DONE', 'reused': 'REUSE', 'failed': 'FAIL'}.get(result.disposition, 'OK' if result.success else 'FAIL')
             fname = os.path.basename(result.input_path)
             bar_len = 30
             filled = int(bar_len * done // total)
             bar = '#' * filled + '-' * (bar_len - filled)
-            sys.stdout.write(f'\r  [{bar}] {done}/{total} ({pct:5.1f}%) Last: [{status}] {fname}     ')
+            sys.stdout.write(f'\r  [{bar}] {done}/{total} ({pct:5.1f}%) Last: [{tag}] {fname}     ')
             sys.stdout.flush()
             if done == total:
                 sys.stdout.write('\n')
         progress_cb = _progress
-    batch = BatchExecutor(executor, input_dir, output_dir, config_file=config_path, progress_callback=progress_cb)
+    batch = BatchExecutor(
+        executor, input_dir, output_dir, config_file=config_path,
+        progress_callback=progress_cb, config_raw=cfg.raw,
+        use_ledger=(not args.no_ledger), ledger_path=args.ledger_file,
+        retry_failed=args.retry_failed, force_recompute=args.force_recompute)
     report = batch.run()
     if progress_cb is not None:
         sys.stdout.write('\n')
@@ -234,6 +246,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument('-v', '--verbose', action='store_true', help='Include per-node details in text report.')
     p_run.add_argument('--no-progress', action='store_true', help='Disable progress bar during processing.')
     p_run.add_argument('--no-report', action='store_true', help='Do not write JSON batch report file.')
+    ledger_group = p_run.add_argument_group('resumable ledger')
+    ledger_group.add_argument('--no-ledger', action='store_true', help='Disable the resumable run ledger; process every image this run.')
+    ledger_group.add_argument('--ledger-file', default=None, help='Explicit ledger path (default: <output>/.imgpipe/ledger.jsonl).')
+    ledger_group.add_argument('--retry-failed', action='store_true', help='Re-process items recorded as failed in the ledger (default: leave them failed).')
+    ledger_group.add_argument('--force-recompute', action='store_true', help='Ignore all ledger records and re-process every input, overwriting outputs.')
     p_run.set_defaults(func=cmd_run)
     p_val = sub.add_parser('validate', help='Validate a pipeline config (params, connections, no cycles).', description='Check pipeline config for errors and warnings.')
     p_val.add_argument('-c', '--config', required=True, help='Path to pipeline JSON config file.')
