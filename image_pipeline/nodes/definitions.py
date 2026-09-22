@@ -359,23 +359,41 @@ class OutputNode(PipelineNode):
         input_filename = self._execution_context.get('input_filename')
         params = self.effective_params()
         if output_dir and input_filename:
-            import os
-            stem, ext = os.path.splitext(input_filename)
-            suffix = params.get('suffix', '')
-            fmt = params.get('format')
-            if fmt:
-                fmt_to_ext = {'PNG': '.png', 'JPEG': '.jpg', 'BMP': '.bmp', 'TIFF': '.tif', 'WEBP': '.webp'}
-                out_ext = fmt_to_ext.get(fmt.upper(), ext)
-            else:
-                out_ext = ext if ext else '.png'
-            out_name = f'{stem}{suffix}{out_ext}'
-            out_path = os.path.join(output_dir, out_name)
+            out_path = output_node_target_path(self, input_filename, output_dir)
             try:
-                write_image(img, out_path, fmt=fmt, quality=int(params.get('quality', 90)))
+                write_image(img, out_path, fmt=params.get('format'), quality=int(params.get('quality', 90)))
                 self._execution_context[f'_output_{self.node_id}_path'] = out_path
             except Exception as e:
                 raise ExecutionError(f"[{self.node_id}] Failed to write output to '{out_path}': {e}") from e
         return img
+
+
+def output_node_target_path(node: 'OutputNode', input_filename: str, output_dir: str) -> str:
+    """Deterministic target path for an output node (shared by execution,
+    dry-run prediction and the resume ledger)."""
+    import os
+    params = node.effective_params()
+    stem, ext = os.path.splitext(input_filename)
+    suffix = params.get('suffix', '')
+    fmt = params.get('format')
+    if fmt:
+        fmt_to_ext = {'PNG': '.png', 'JPEG': '.jpg', 'BMP': '.bmp', 'TIFF': '.tif', 'WEBP': '.webp'}
+        out_ext = fmt_to_ext.get(str(fmt).upper(), ext)
+    else:
+        out_ext = ext if ext else '.png'
+    out_name = f'{stem}{suffix}{out_ext}'
+    return os.path.join(output_dir, out_name)
+
+
+def predict_output_paths(graph: 'PipelineGraph', input_filename: str, output_dir: str,
+                         order: Optional[List[str]]=None) -> List[str]:
+    """All files the graph's output nodes plan to write for one input image."""
+    if order is None:
+        output_nodes = graph.get_output_nodes()
+    else:
+        output_nodes = [graph.nodes[nid] for nid in order
+                        if isinstance(graph.nodes.get(nid), OutputNode)]
+    return [output_node_target_path(n, input_filename, output_dir) for n in output_nodes]
 NODE_TYPE_MAP: Dict[str, type] = {NodeType.INPUT.value: InputNode, NodeType.GRAYSCALE.value: GrayscaleNode, NodeType.BRIGHTNESS.value: BrightnessNode, NodeType.CONTRAST.value: ContrastNode, NodeType.THRESHOLD.value: ThresholdNode, NodeType.BOX_BLUR.value: BoxBlurNode, NodeType.GAUSSIAN_BLUR.value: GaussianBlurNode, NodeType.SHARPEN.value: SharpenNode, NodeType.SOBEL.value: SobelNode, NodeType.PREWITT.value: PrewittNode, NodeType.CROP.value: CropNode, NodeType.RESIZE.value: ResizeNode, NodeType.OUTPUT.value: OutputNode}
 
 def create_node(node_type: str, node_id: str, params: Dict[str, Any]=None) -> PipelineNode:

@@ -1,7 +1,13 @@
 from typing import Tuple
 from PIL import Image as PILImage
+import hashlib
+import json
 import os
+import tempfile
 from ..algorithms.core import Image as AlgoImage, Pixel
+
+#: Prefix for temporary files created by interrupted atomic writes.
+TEMP_FILE_PREFIX = '.imgwrite-'
 
 def pil_to_algo(pil_img: PILImage.Image) -> AlgoImage:
     if pil_img.mode not in ('RGB', 'RGBA', 'L', 'LA'):
@@ -97,7 +103,104 @@ def write_image(img: AlgoImage, path: str, fmt: str=None, quality: int=90) -> No
         save_kwargs['optimize'] = True
     elif fmt == 'PNG':
         save_kwargs['optimize'] = True
-    pil_img.save(path, format=fmt, **save_kwargs)
+    write_file_atomic(path, lambda tmp_path: pil_img.save(tmp_path, format=fmt, **save_kwargs))
+
+
+def write_file_atomic(dest_path: str, writer) -> str:
+    """Write a file atomically.
+
+    ``writer(tmp_path)`` must fully write ``tmp_path``.  The temp file is
+    fsynced, then ``os.replace`` swaps it into place and the directory is
+    fsynced.  A crash therefore leaves either the previous contents of
+    ``dest_path`` intact or a fully written new file -- never a partially
+    written destination.  Temp files left by an interrupted write are
+    cleaned up by :func:`cleanup_temp_files`.
+    """
+    out_dir = os.path.dirname(dest_path) or '.'
+    if not os.path.isdir(out_dir):
+        os.makedirs(out_dir, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=TEMP_FILE_PREFIX, dir=out_dir)
+    os.close(fd)
+    try:
+        writer(tmp_path)
+        _fsync_file(tmp_path)
+        os.replace(tmp_path, dest_path)
+        _fsync_dir(out_dir)
+    except BaseException:
+        _quiet_remove(tmp_path)
+        raise
+    return dest_path
+
+
+def _fsync_file(path: str) -> None:
+    try:
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except OSError:
+        pass
+
+
+def _fsync_dir(path: str) -> None:
+    try:
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except OSError:
+        pass
+
+
+def _quiet_remove(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def cleanup_temp_files(directory: str) -> int:
+    """Remove leftover atomic-write temp files from ``directory`` (top level).
+
+    Returns the number of files removed.
+    """
+    removed = 0
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return 0
+    for name in names:
+        if name.startswith(TEMP_FILE_PREFIX):
+            fpath = os.path.join(directory, name)
+            try:
+                os.remove(fpath)
+                removed += 1
+            except OSError:
+                pass
+    return removed
+
+
+def file_sha256(path: str, chunk_size: int=1024 * 1024) -> str:
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        while True:
+            chunk = f.read(chunk_size)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def bytes_sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def canonical_json_sha256(obj) -> str:
+    """Stable hash of a JSON-serialisable object (sorted keys, no whitespace)."""
+    payload = json.dumps(obj, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+    return hashlib.sha256(payload.encode('utf-8')).hexdigest()
 
 def image_size(path: str) -> Tuple[int, int]:
     with PILImage.open(path) as img:

@@ -36,6 +36,14 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f'Input dir: {input_dir}')
         print(f'Output dir: {output_dir}')
         print(f"Execution order: {' -> '.join(executor.execution_order)}")
+        if args.force:
+            print('Mode: FORCE recompute (verified prior results are ignored)')
+        elif args.no_resume:
+            print('Mode: resume ledger maintained, reuse disabled')
+        elif args.retry_failed:
+            print('Mode: resume, retrying previously failed items')
+        else:
+            print('Mode: resume (verified outputs are reused)')
         print()
     if not os.path.isdir(input_dir):
         print(f'ERROR: Input directory not found: {input_dir}', file=sys.stderr)
@@ -61,7 +69,10 @@ def cmd_run(args: argparse.Namespace) -> int:
             if done == total:
                 sys.stdout.write('\n')
         progress_cb = _progress
-    batch = BatchExecutor(executor, input_dir, output_dir, config_file=config_path, progress_callback=progress_cb)
+    batch = BatchExecutor(executor, input_dir, output_dir, config_file=config_path,
+                          progress_callback=progress_cb,
+                          resume=(not args.no_resume), force=args.force,
+                          retry_failed=args.retry_failed, config_raw=cfg.raw)
     report = batch.run()
     if progress_cb is not None:
         sys.stdout.write('\n')
@@ -69,11 +80,15 @@ def cmd_run(args: argparse.Namespace) -> int:
         report_path = batch.write_report(report)
         if not args.quiet:
             print(f'JSON report written to: {report_path}')
+    elif not args.quiet:
+        print(f"Ledger: {batch.ledger.path if batch.ledger is not None else '(none)'}")
     verbose = args.verbose
     text_report = print_text_report(report, verbose=verbose)
     if not args.quiet:
         print()
         print(text_report)
+    if report.total == 0:
+        return 2
     if report.succeeded == report.total:
         return 0
     elif report.succeeded > 0 and report.failed > 0:
@@ -234,6 +249,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument('-v', '--verbose', action='store_true', help='Include per-node details in text report.')
     p_run.add_argument('--no-progress', action='store_true', help='Disable progress bar during processing.')
     p_run.add_argument('--no-report', action='store_true', help='Do not write JSON batch report file.')
+    resume_group = p_run.add_mutually_exclusive_group()
+    resume_group.add_argument('--retry-failed', action='store_true',
+                              help='Recompute items that failed in a previous run (verified completions are still reused).')
+    resume_group.add_argument('--force', action='store_true',
+                              help='Force recomputation of every image, ignoring verified prior completions.')
+    p_run.add_argument('--no-resume', action='store_true',
+                       help='Do not reuse prior results this run; the ledger is still written for future recovery.')
     p_run.set_defaults(func=cmd_run)
     p_val = sub.add_parser('validate', help='Validate a pipeline config (params, connections, no cycles).', description='Check pipeline config for errors and warnings.')
     p_val.add_argument('-c', '--config', required=True, help='Path to pipeline JSON config file.')
